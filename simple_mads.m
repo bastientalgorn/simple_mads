@@ -1,200 +1,195 @@
 function [Xmin,fmin,output] = simple_mads(X0,bb_handle,lb,ub,options)
 
-% Default options
-default_options.budget = +inf;
-default_options.tol    = 1e-9;
-default_options.psize_init = 1.0;
-default_options.display         = false;
-default_options.opportunistic   = true;
-default_options.check_cache     = true;
+  %-------------------------------
+  % Options
+  %-------------------------------
 
-% Options
-if ~exist('options','var')
-    options = struct;
-end
-names = fieldnames(default_options);
-for i = 1:length(names)
-    fieldstr = names{i};
-    if ~isfield(options,fieldstr)
-        options.(fieldstr) = default_options.(fieldstr);
-    end
-end
+  % Default options
+  default_options.budget = +inf;
+  default_options.tol    = 1e-9;
+  default_options.psize_init = 1.0;
+  default_options.display         = false;
+  default_options.opportunistic   = true;
+  default_options.check_cache     = true;
 
-% Stuff...
-DIM = size(X0,2);
-if length(lb)~=DIM
-    error('Wrong lb dimension');
-end
-if length(ub)~=DIM
-    error('Wrong ub dimension');
-end
-bbe = 0;
-CACHE = [];
-fmin = +inf;
-hmin = +inf;
+  % Construct the option structure from user options and default options
+  if ~exist('options','var')
+      options = struct;
+  end
+  names = fieldnames(default_options);
+  for i = 1:length(names)
+      fieldstr = names{i};
+      if ~isfield(options,fieldstr)
+          options.(fieldstr) = default_options.(fieldstr);
+      end
+  end
 
+  %-------------------------------
+  % Dimension and verifications
+  %-------------------------------
+  DIM = size(X0,2);
+  if length(lb)~=DIM
+      error('Wrong lb dimension');
+  end
+  if length(ub)~=DIM
+      error('Wrong ub dimension');
+  end
 
-% Evaluation of starting point(s)
-for i=1:size(X0,1)
-        Xtry = X0(i,:);
-        %disp(num2str(Xtry))
-        
-        if any(Xtry>ub) || any(Xtry<lb)
-            Xtry
-            ub
-            lb
-            error('Starting point is not within the box constraints');
-        end
-        
-        % Evaluation
-        bbe = bbe+1;
-        bbo = bb_handle(Xtry);
+  %-------------------------------
+  % Initialization
+  %-------------------------------
+  iter = 0;
+  bbe = 0;
+  CACHE = [];
+  fmin = +inf;
+  hmin = +inf;
 
-        % eval_fh
-        [ftry,htry] = eval_fh(bbo);
-    
-        % Add to the CACHE
-        if options.check_cache
-            CACHE(end+1,:) = Xtry;
-        end
+  % Variable scaling
+  scaling = (ub-lb)/10.0;
+  scaling(isinf(scaling)) = 1.0;
+  scaling = diag(scaling);
 
-        % Improvement of the feasibility or of the objective ?
-        success = ( (hmin>0) && (htry<hmin) ) || ( (htry==0) && (ftry<fmin) );
-        % If success, save values
-        if success
-            fmin = ftry;
-            hmin = htry;
-            Xmin = Xtry;
-        end
-        if options.display
-            disp(['x0     : ' num2str(ftry,4) ' (hmin = ' num2str(htry,4) ')']);
-        end
+  % Poll size initialization
+  psize = options.psize_init;
+  psize_success = psize;
+  psize_max = 0;
 
-end
+  %-------------------------------
+  % Start the optimization
+  %-------------------------------
+  while true
 
+      if iter==0
+          % Evaluate starting points
+          if (options.display)
+              disp('Evaluation of the starting points');
+          end
+          POLL = X0;
+      else       
+          %-------------------------------
+          % Build polling directions
+          %-------------------------------
+          msize = min(psize^2,psize);
+          rho = psize/msize;
+          % Generate direction
+          v = randn(DIM,1);
+          % Normalize
+          v = v/norm(v);
+          % Build Householder matrix
+          H = eye(DIM)-2*v*v';
+          % Normalization of each column
+          H = H*diag(max(abs(H)).^-1);
+          % Rounding (and transpose)
+          H = msize*ceil(rho*H)';
+          % Take the opposite directions
+          H = [H;-H];
 
+          % scaling of the directions
+          H = H*scaling;
 
+          % Build POLL / central point
+          POLL = ones(2*DIM,1)*Xmin + H;
 
+          % Shuffle poll
+          POLL = POLL(randperm(2*DIM),:);
+      end
 
-% Variable scaling
-scaling = (ub-lb)/10.0;
-scaling(isinf(scaling)) = 1.0;
-scaling = diag(scaling);
+      %-------------------------------
+      % Evaluate points of the poll
+      %-------------------------------
+      success = false;
+      for i=1:size(POLL,1)
 
-% Init
-psize = options.psize_init;
-psize_success = psize;
-psize_max = 0;
-iter = 1;
+          % Get point
+          Xtry = POLL(i,:);
 
-while true
+          % Snap to bounds
+          Xtry = max(Xtry,lb);
+          Xtry = min(Xtry,ub);
 
-    % Build polling directions
-    msize = min(psize^2,psize);
-    rho = psize/msize;
-    % Generate direction
-    v = randn(DIM,1);
-    % Normalize
-    v = v/norm(v);
-    % Build Householder matrix
-    H = eye(DIM)-2*v*v';
-    % Normalization of each column
-    H = H*diag(max(abs(H)).^-1);
-    % Rounding (and transpose)
-    H = msize*ceil(rho*H)';
-    % Take the opposite directions
-    H = [H;-H];
+          % Search in CACHE
+          if options.check_cache && ~isempty(CACHE)
+              DC = CACHE-ones(size(CACHE,1),1)*Xtry;
+              DC = abs(DC)<options.tol;
+              if any(all(DC,2))
+                  if options.display
+                      disp('Cache hit');
+                  end
+                  continue;
+              end
+          end
 
-    % scaling of the directions
-    H = H*scaling;
+          % Evaluation
+          bbe = bbe+1;
+          bbo = bb_handle(Xtry);
+          % compute h and f
+          [ftry,htry] = eval_fh(bbo);
+          
+          % Add to the CACHE
+          if options.check_cache
+              CACHE(end+1,:) = Xtry;
+          end
 
-    % Build POLL / central point
-    POLL = ones(2*DIM,1)*Xmin + H;
+          % Save values
+          if ( (hmin>0) && (htry<hmin) ) || ( (htry==0) && (ftry<fmin) )
+              success = true;
+              fmin = ftry;
+              hmin = htry;
+              if options.display
+                  disp(['Succes : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
+              end
+              Xmin = Xtry;
+              psize_success = psize;
+              psize_max = max(psize,psize_max);
+          end
+          
+          if bbe>=options.budget
+              break; % Reached the total budget
+          end
+          if success && options.opportunistic && (iter>1)
+              break; % Quit the evaluation of the POLL
+          end
 
-    % Shuffle poll
-    POLL = POLL(randperm(2*DIM),:);
+      end
 
-    % Evaluate points of the poll
-    success = false;
-    for i=1:size(POLL,1)
+      %-------------------------------
+      % Updates
+      %-------------------------------
 
-        % Get point
-        Xtry = POLL(i,:);
+      if iter>0
+          if success
+              psize = psize*2;
+          else
+              psize = psize/2;
+          end
+      end
 
-        % Snap to bounds
-        Xtry = max(Xtry,lb);
-        Xtry = min(Xtry,ub);
+      if options.display
+          if iter==0
+              disp('End of the evaluation of the starting points');
+          end
+          disp(['iter=' num2str(iter) ' bbe=' num2str(bbe) ' psize=' num2str(psize,3) '  hmin=' num2str(hmin,3) '  fmin=' num2str(fmin,3)]);
+      end
 
-        % Search in CACHE
-        if options.check_cache && ~isempty(CACHE)
-            DC = CACHE-ones(size(CACHE,1),1)*Xtry;
-            DC = abs(DC)<options.tol;
-            if any(all(DC,2))
-                continue;
-            end
-        end
-
-        % Evaluation
-        bbe = bbe+1;
-        bbo = bb_handle(Xtry);
-        % compute h and f
-        [ftry,htry] = eval_fh(bbo);
-        
-        % Add to the CACHE
-        if options.check_cache
-            CACHE(end+1,:) = Xtry;
-        end
-
-        % Save values
-        if ( (hmin>0) && (htry<hmin) ) || ( (htry==0) && (ftry<fmin) )
-            success = true;
-            fmin = ftry;
-            hmin = htry;
-            if options.display
-                disp(['Succes : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
-            end
-            Xmin = Xtry;
-            psize_success = psize;
-            psize_max = max(psize,psize_max);
-        end
-        
-        if bbe>=options.budget
-            break; % Reached the total budget
-        end
-        if success && options.opportunistic
-            break; % Quit the evaluation of the POLL
-        end
-
-    end
-
-    if success
-        psize = psize*2;
-    else
-        psize = psize/2;
-    end
-
-    if options.display
-        disp(['iter=' num2str(iter) ' bbe=' num2str(bbe) ' psize=' num2str(psize,3) '  hmin=' num2str(hmin,3) '  fmin=' num2str(fmin,3)]);
-    end
-
-    if (abs(psize)<options.tol) || (bbe>=options.budget)
-        break;
-    end
-    iter = iter+1;
-end
+      if (abs(psize)<options.tol) || (bbe>=options.budget)
+          break;
+      end
+      
+      iter = iter+1;
+  end % end of the mads iterations
 
 
-if options.display
-    disp(['mads break - iter ' num2str(iter,2) ', psize ' num2str(psize,2) ', bbe ' num2str(bbe)]);
-    disp(['Final  : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
-end
+  if options.display
+      disp(['mads break - iter ' num2str(iter,2) ', psize ' num2str(psize,2) ', bbe ' num2str(bbe)]);
+      disp(['Final  : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
+  end
 
-% Build the output
-output.fmin = fmin;
-output.hmin = hmin;
-output.psize = psize;
-output.psize_success = psize_success;
-output.psize_max = psize_max;
+  % Build the output
+  output.fmin = fmin;
+  output.hmin = hmin;
+  output.psize = psize;
+  output.psize_success = psize_success;
+  output.psize_max = psize_max;
 
 end % end function simple_mads
 
