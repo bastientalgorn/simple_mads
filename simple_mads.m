@@ -1,244 +1,221 @@
-/*-------------------------------------------------------------------------------------*/
-/*  simple_mads                                                                        */
-/*                                                                                     */
-/*  A simple matlab version of the Mesh Adaptive Direct Search algorithm               */
-/*  for constrained derivative free optimization.                                      */
-/*  Version 2.0.1                                                                      */
-/*                                                                                     */
-/*  Copyright (C) 2012-2016  Bastien Talgorn - McGill University, Montreal             */
-/*                                                                                     */
-/*  Author: Bastien Talgorn                                                            */
-/*  email: bastientalgorn@fastmail.com                                                 */
-/*                                                                                     */
-/*  This program is free software: you can redistribute it and/or modify it under the  */
-/*  terms of the GNU Lesser General Public License as published by the Free Software   */
-/*  Foundation, either version 3 of the License, or (at your option) any later         */
-/*  version.                                                                           */
-/*                                                                                     */
-/*  This program is distributed in the hope that it will be useful, but WITHOUT ANY    */
-/*  WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A    */
-/*  PARTICULAR PURPOSE.  See the GNU Lesser General Public License for more details.   */
-/*                                                                                     */
-/*  You should have received a copy of the GNU Lesser General Public License along     */
-/*  with this program. If not, see <http://www.gnu.org/licenses/>.                     */
-/*                                                                                     */
-/*  You can find information on simple_mads at                                         */
-/*  https://github.com/bastientalgorn/simple_mads                                      */
-/*-------------------------------------------------------------------------------------*/
+%-------------------------------------------------------------------------------------%
+%  simple_mads                                                                        %
+%                                                                                     %
+%  A simple matlab version of the Mesh Adaptive Direct Search algorithm               %
+%  for constrained derivative free optimization.                                      %
+%  Version 2.0.2                                                                      %
+%                                                                                     %
+%  Copyright (C) 2012-2016  Bastien Talgorn - McGill University, Montreal             %
+%                                                                                     %
+%  Author: Bastien Talgorn                                                            %
+%  email: bastientalgorn@fastmail.com                                                 %
+%                                                                                     %
+%  This program is free software: you can redistribute it and/or modify it under the  %
+%  terms of the GNU Lesser General Public License as published by the Free Software   %
+%  Foundation, either version 3 of the License, or (at your option) any later         %
+%  version.                                                                           %
+%                                                                                     %
+%  This program is distributed in the hope that it will be useful, but WITHOUT ANY    %
+%  WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A    %
+%  PARTICULAR PURPOSE.  See the GNU Lesser General Public License for more details.   %
+%                                                                                     %
+%  You should have received a copy of the GNU Lesser General Public License along     %
+%  with this program. If not, see <http://www.gnu.org/licenses/>.                     %
+%                                                                                     %
+%  You can find information on simple_mads at                                         %
+%  https://github.com/bastientalgorn/simple_mads                                      %
+%-------------------------------------------------------------------------------------%
 
 function [Xmin,fmin,output] = simple_mads(X0,bb_handle,lb,ub,options)
 
-  %-------------------------------
-  % Options
-  %-------------------------------
+%-------------------------------
+% Options
+%-------------------------------
+% Default options
+default_options.budget = +inf;
+default_options.tol    = 1e-9;
+default_options.psize_init = 1.0;
+default_options.display         = false;
+default_options.opportunistic   = true;
+default_options.check_cache     = true;
 
-  % Default options
-  default_options.budget = +inf;
-  default_options.tol    = 1e-9;
-  default_options.psize_init = 1.0;
-  default_options.display         = false;
-  default_options.opportunistic   = true;
-  default_options.check_cache     = true;
+% Construct the option structure from user options and default options
+if ~exist('options','var')
+    options = struct;
+end
+names = fieldnames(default_options);
+for i = 1:length(names)
+    fieldstr = names{i};
+    if ~isfield(options,fieldstr)
+        options.(fieldstr) = default_options.(fieldstr);
+    end
+end
 
-  % Construct the option structure from user options and default options
-  if ~exist('options','var')
-      options = struct;
-  end
-  names = fieldnames(default_options);
-  for i = 1:length(names)
-      fieldstr = names{i};
-      if ~isfield(options,fieldstr)
-          options.(fieldstr) = default_options.(fieldstr);
-      end
-  end
+%-------------------------------
+% Dimension and verifications
+%-------------------------------
+DIM = size(X0,2);
+if length(lb)~=DIM
+    error('Wrong lb dimension');
+end
+if length(ub)~=DIM
+    error('Wrong ub dimension');
+end
 
-  %-------------------------------
-  % Dimension and verifications
-  %-------------------------------
-  DIM = size(X0,2);
-  if length(lb)~=DIM
-      error('Wrong lb dimension');
-  end
-  if length(ub)~=DIM
-      error('Wrong ub dimension');
-  end
+%-------------------------------
+% Initialization
+%-------------------------------
+iteration = 0;
+bb_eval = 0;
+CACHE = [];
+fmin = +inf;
+hmin = +inf;
 
-  %-------------------------------
-  % Initialization
-  %-------------------------------
-  iter = 0;
-  bbe = 0;
-  CACHE = [];
-  fmin = +inf;
-  hmin = +inf;
+% Variable scaling
+scaling = (ub-lb)/10.0;
+scaling(isinf(scaling)) = 1.0;
+scaling = diag(scaling);
 
-  % Variable scaling
-  scaling = (ub-lb)/10.0;
-  scaling(isinf(scaling)) = 1.0;
-  scaling = diag(scaling);
+% Poll size initialization
+psize = options.psize_init;
+psize_success = psize;
+psize_max = 0;
 
-  % Poll size initialization
-  psize = options.psize_init;
-  psize_success = psize;
-  psize_max = 0;
+%-------------------------------
+% Start the optimization
+%-------------------------------
+while true
 
-  %-------------------------------
-  % Start the optimization
-  %-------------------------------
-  while true
+    if iteration==0
+        % Evaluate starting points
+        if (options.display)
+            disp('Evaluation of the starting points');
+        end
+        POLL = X0;
+    else
+        %-------------------------------
+        % Build polling directions
+        %-------------------------------
+        msize = min(psize^2,psize);
+        rho = psize/msize;
+        % Generate direction
+        v = randn(DIM,1);
+        % Normalize
+        v = v/norm(v);
+        % Build Householder matrix
+        H = eye(DIM)-2*v*v';
+        % Normalization of each column
+        H = H*diag(max(abs(H)).^-1);
+        % Rounding (and transpose)
+        H = msize*ceil(rho*H)';
+        % Add the opposite directions and scale
+        H = [H;-H]*scaling;
+        % Build POLL / central point
+        POLL = ones(2*DIM,1)*Xmin + H;
+        % Shuffle poll
+        POLL = POLL(randperm(2*DIM),:);
+    end
 
-      if iter==0
-          % Evaluate starting points
-          if (options.display)
-              disp('Evaluation of the starting points');
-          end
-          POLL = X0;
-      else       
-          %-------------------------------
-          % Build polling directions
-          %-------------------------------
-          msize = min(psize^2,psize);
-          rho = psize/msize;
-          % Generate direction
-          v = randn(DIM,1);
-          % Normalize
-          v = v/norm(v);
-          % Build Householder matrix
-          H = eye(DIM)-2*v*v';
-          % Normalization of each column
-          H = H*diag(max(abs(H)).^-1);
-          % Rounding (and transpose)
-          H = msize*ceil(rho*H)';
-          % Take the opposite directions
-          H = [H;-H];
+    %-------------------------------
+    % Evaluate points of the poll
+    %-------------------------------
+    success = false;
+    for i=1:size(POLL,1)
 
-          % scaling of the directions
-          H = H*scaling;
+        % Get point
+        Xtry = POLL(i,:);
 
-          % Build POLL / central point
-          POLL = ones(2*DIM,1)*Xmin + H;
+        % Snap to bounds
+        Xtry = max(Xtry,lb);
+        Xtry = min(Xtry,ub);
 
-          % Shuffle poll
-          POLL = POLL(randperm(2*DIM),:);
-      end
+        % Search in CACHE
+        if options.check_cache && ismember(Xtry,CACHE,'rows')
+            if options.display
+                disp('Cache hit');
+            end
+            continue;
+        end
 
-      %-------------------------------
-      % Evaluate points of the poll
-      %-------------------------------
-      success = false;
-      for i=1:size(POLL,1)
+        % Evaluation of the blackbox
+        bb_output = bb_handle(Xtry);
+        bb_eval = bb_eval+1;
+        
+        % Objective function
+        ftry = bb_output(1);
+        % Constraints (can be an empty vector)
+        ctry = bb_output(2:end);
+        % Aggregate constraint
+        htry = sum(max(ctry,0).^2);
+        if isnan(htry) || any(isnan(ctry))
+            htry = +inf;
+        end
+        % Penalize the objective
+        if isnan(ftry) || (htry>0)
+            ftry = +inf;
+        end
 
-          % Get point
-          Xtry = POLL(i,:);
+        % Add to the CACHE
+        if options.check_cache
+            CACHE(end+1,:) = Xtry;
+        end
 
-          % Snap to bounds
-          Xtry = max(Xtry,lb);
-          Xtry = min(Xtry,ub);
+        % Save values
+        if ( (hmin>0) && (htry<hmin) ) || ( (htry==0) && (ftry<fmin) )
+            success = true;
+            fmin = ftry;
+            hmin = htry;
+            if options.display
+                disp(['Succes : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
+            end
+            Xmin = Xtry;
+            psize_success = psize;
+            psize_max = max(psize,psize_max);
+        end
 
-          % Search in CACHE
-          if options.check_cache && ~isempty(CACHE)
-              DC = CACHE-ones(size(CACHE,1),1)*Xtry;
-              DC = abs(DC)<options.tol;
-              if any(all(DC,2))
-                  if options.display
-                      disp('Cache hit');
-                  end
-                  continue;
-              end
-          end
+        if bb_eval>=options.budget
+            break; % Reached the total budget
+        end
+        if success && options.opportunistic && (iteration>1)
+            break; % Quit the evaluation of the POLL
+        end
 
-          % Evaluation
-          bbe = bbe+1;
-          bbo = bb_handle(Xtry);
-          % compute h and f
-          [ftry,htry] = eval_fh(bbo);
-          
-          % Add to the CACHE
-          if options.check_cache
-              CACHE(end+1,:) = Xtry;
-          end
+    end
 
-          % Save values
-          if ( (hmin>0) && (htry<hmin) ) || ( (htry==0) && (ftry<fmin) )
-              success = true;
-              fmin = ftry;
-              hmin = htry;
-              if options.display
-                  disp(['Succes : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
-              end
-              Xmin = Xtry;
-              psize_success = psize;
-              psize_max = max(psize,psize_max);
-          end
-          
-          if bbe>=options.budget
-              break; % Reached the total budget
-          end
-          if success && options.opportunistic && (iter>1)
-              break; % Quit the evaluation of the POLL
-          end
+    %-------------------------------
+    % Updates
+    %-------------------------------
+    if iteration>0
+        if success
+            psize = psize*2;
+        else
+            psize = psize/2;
+        end
+    end
 
-      end
+    if options.display
+        if iteration==0
+            disp('End of the evaluation of the starting points');
+        end
+        disp(['iteration=' num2str(iteration) ' bb_eval=' num2str(bb_eval) ' psize=' num2str(psize,3) '  hmin=' num2str(hmin,3) '  fmin=' num2str(fmin,3)]);
+    end
 
-      %-------------------------------
-      % Updates
-      %-------------------------------
+    if (abs(psize)<options.tol) || (bb_eval>=options.budget)
+        break;
+    end
 
-      if iter>0
-          if success
-              psize = psize*2;
-          else
-              psize = psize/2;
-          end
-      end
+    iteration = iteration+1;
+end % end of the mads iterations
 
-      if options.display
-          if iter==0
-              disp('End of the evaluation of the starting points');
-          end
-          disp(['iter=' num2str(iter) ' bbe=' num2str(bbe) ' psize=' num2str(psize,3) '  hmin=' num2str(hmin,3) '  fmin=' num2str(fmin,3)]);
-      end
+if options.display
+    disp(['mads break - iteration ' num2str(iteration,2) ', psize ' num2str(psize,2) ', bb_eval ' num2str(bb_eval)]);
+    disp(['Final  : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
+end
 
-      if (abs(psize)<options.tol) || (bbe>=options.budget)
-          break;
-      end
-      
-      iter = iter+1;
-  end % end of the mads iterations
+% Build the output
+output.fmin = fmin;
+output.hmin = hmin;
+output.psize = psize;
+output.psize_success = psize_success;
+output.psize_max = psize_max;
 
-
-  if options.display
-      disp(['mads break - iter ' num2str(iter,2) ', psize ' num2str(psize,2) ', bbe ' num2str(bbe)]);
-      disp(['Final  : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
-  end
-
-  % Build the output
-  output.fmin = fmin;
-  output.hmin = hmin;
-  output.psize = psize;
-  output.psize_success = psize_success;
-  output.psize_max = psize_max;
-
-end % end function simple_mads
-
-
-
-function [f,h] = eval_fh(bbo)
-  % Concatenation of bbo from f & c functions
-  f = bbo(1);
-  if length(bbo)==1
-      h = 0;
-  else
-      c = bbo(2:end);
-      % Check non valid values
-      if any(isnan(c))
-          h = +inf;
-      else
-          h = sum(max(c,0).^2);
-      end
-  end
-  % Penalize objective
-  if isnan(f) || (h>0)
-    f = +inf;
-  end
-end % end function eval_fh
