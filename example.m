@@ -45,7 +45,7 @@ ub = +5*ones(1,N);
 
 % Starting points (one line per starting points)
 px0 = 10;
-LH = lhspoint(px0,N)';
+LH = lhsdesign(px0,N);
 X0 = ones(px0,1)*lb + LH.*( ones(px0,1)*(ub-lb) );
 
 % MADS options

@@ -130,7 +130,7 @@ while true
         Xtry = min(Xtry,ub);
 
         % Search in CACHE
-        if options.check_cache && ismember(Xtry,CACHE,'rows')
+        if options.check_cache && size(CACHE,1) && ismember(Xtry,CACHE,'rows')
             if options.display
                 disp('Cache hit');
             end
@@ -160,7 +160,7 @@ while true
             CACHE(end+1,:) = Xtry;
         end
 
-        % Save values
+        % Test for success
         if ( (hmin>0) && (htry<hmin) ) || ( (htry==0) && (ftry<fmin) )
             success = true;
             fmin = ftry;
