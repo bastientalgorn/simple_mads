@@ -3,9 +3,9 @@
 %                                                                                     %
 %  A simple matlab version of the Mesh Adaptive Direct Search algorithm               %
 %  for constrained derivative free optimization.                                      %
-%  Version 2.0.2                                                                      %
+%  Version 2.0.3                                                                      %
 %                                                                                     %
-%  Copyright (C) 2012-2016  Bastien Talgorn - McGill University, Montreal             %
+%  Copyright (C) 2012-2017  Bastien Talgorn - McGill University, Montreal             %
 %                                                                                     %
 %  Author: Bastien Talgorn                                                            %
 %  email: bastientalgorn@fastmail.com                                                 %

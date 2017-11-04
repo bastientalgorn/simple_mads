@@ -3,9 +3,9 @@
 %                                                                                     %
 %  A simple matlab version of the Mesh Adaptive Direct Search algorithm               %
 %  for constrained derivative free optimization.                                      %
-%  Version 2.0.2                                                                      %
+%  Version 2.0.3                                                                      %
 %                                                                                     %
-%  Copyright (C) 2012-2016  Bastien Talgorn - McGill University, Montreal             %
+%  Copyright (C) 2012-2017  Bastien Talgorn - McGill University, Montreal             %
 %                                                                                     %
 %  Author: Bastien Talgorn                                                            %
 %  email: bastientalgorn@fastmail.com                                                 %
@@ -26,18 +26,19 @@
 %  https://github.com/bastientalgorn/simple_mads                                      %
 %-------------------------------------------------------------------------------------%
 
-function [Xmin,fmin,output] = simple_mads(X0,bb_handle,lb,ub,options)
+function [xmin,fmin,output] = simple_mads(X0,bb_handle,lb,ub,options)
 
 %-------------------------------
 % Options
 %-------------------------------
 % Default options
-default_options.budget = +inf;
-default_options.tol    = 1e-9;
-default_options.psize_init = 1.0;
-default_options.display         = false;
-default_options.opportunistic   = true;
-default_options.check_cache     = true;
+default_options.budget        = +inf;
+default_options.tol           = 1e-9;
+default_options.psize_init    = 1.0;
+default_options.display       = false;
+default_options.opportunistic = true;
+default_options.check_cache   = true;
+default_options.collect_y     = false;
 
 % Construct the option structure from user options and default options
 if ~exist('options','var')
@@ -67,9 +68,11 @@ end
 %-------------------------------
 iteration = 0;
 bb_eval = 0;
-CACHE = [];
+cache = [];
 fmin = +inf;
 hmin = +inf;
+ymin = [];
+ytry = [];
 
 % Variable scaling
 scaling = (ub-lb)/10.0;
@@ -78,7 +81,7 @@ scaling = diag(scaling);
 
 % Poll size initialization
 psize = options.psize_init;
-psize_success = psize;
+psize_success = 0;
 psize_max = 0;
 
 %-------------------------------
@@ -111,9 +114,12 @@ while true
         % Add the opposite directions and scale
         H = [H;-H]*scaling;
         % Build POLL / central point
-        POLL = ones(2*DIM,1)*Xmin + H;
+        POLL = bsxfun(@plus,xmin,H);
         % Shuffle poll
         POLL = POLL(randperm(2*DIM),:);
+        % Snap to bounds
+        POLL = bsxfun(@min,POLL,ub);
+        POLL = bsxfun(@max,POLL,lb);
     end
 
     %-------------------------------
@@ -123,14 +129,10 @@ while true
     for i=1:size(POLL,1)
 
         % Get point
-        Xtry = POLL(i,:);
+        xtry = POLL(i,:);
 
-        % Snap to bounds
-        Xtry = max(Xtry,lb);
-        Xtry = min(Xtry,ub);
-
-        % Search in CACHE
-        if options.check_cache && size(CACHE,1) && ismember(Xtry,CACHE,'rows')
+        % Search in cache
+        if options.check_cache && size(cache,1) && ismember(xtry,cache,'rows')
             if options.display
                 disp('Cache hit');
             end
@@ -138,7 +140,11 @@ while true
         end
 
         % Evaluation of the blackbox
-        bb_output = bb_handle(Xtry);
+        if options.collect_y   
+            [bb_output,ytry] = bb_handle(xtry);
+        else
+            bb_output = bb_handle(xtry);
+        end
         bb_eval = bb_eval+1;
         
         % Objective function
@@ -155,24 +161,25 @@ while true
             ftry = +inf;
         end
 
-        % Add to the CACHE
+        % Add to the cache
         if options.check_cache
-            CACHE(end+1,:) = Xtry;
+            cache(end+1,:) = xtry;
         end
 
         % Test for success
         if ( (hmin>0) && (htry<hmin) ) || ( (htry==0) && (ftry<fmin) )
             success = true;
+            xmin = xtry;
             fmin = ftry;
             hmin = htry;
+            ymin = ytry;
             if options.display
-                disp(['Succes : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
+                disp(['Succes: ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
             end
-            Xmin = Xtry;
             psize_success = psize;
             psize_max = max(psize,psize_max);
         end
-
+        % Test for stopping criteria
         if bb_eval>=options.budget
             break; % Reached the total budget
         end
@@ -197,7 +204,11 @@ while true
         if iteration==0
             disp('End of the evaluation of the starting points');
         end
-        disp(['iteration=' num2str(iteration) ' bb_eval=' num2str(bb_eval) ' psize=' num2str(psize,3) '  hmin=' num2str(hmin,3) '  fmin=' num2str(fmin,3)]);
+        disp(['iteration=' num2str(iteration) ...
+              ' bb_eval=' num2str(bb_eval) ...
+              ' psize=' num2str(psize,3) ...
+              ' hmin=' num2str(hmin,3) ...
+              ' fmin=' num2str(fmin,3)]);
     end
 
     if (abs(psize)<options.tol) || (bb_eval>=options.budget)
@@ -208,14 +219,20 @@ while true
 end % end of the mads iterations
 
 if options.display
-    disp(['mads break - iteration ' num2str(iteration,2) ', psize ' num2str(psize,2) ', bb_eval ' num2str(bb_eval)]);
-    disp(['Final  : ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
+    disp('end of simple_mads');
+    disp(['Final objective value: ' num2str(fmin) ' (hmin = ' num2str(hmin) ')']);
 end
 
 % Build the output
+output.xmin = xmin;
 output.fmin = fmin;
 output.hmin = hmin;
+output.ymin = ymin;  
+output.bb_eval = bb_eval;
+output.iteration = iteration;
+output.cache = cache;
 output.psize = psize;
 output.psize_success = psize_success;
 output.psize_max = psize_max;
+
 
